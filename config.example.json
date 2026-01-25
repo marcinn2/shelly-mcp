@@ -1,0 +1,16 @@
+{
+  "shelly": {
+    "enabled": true,
+    "devices": [
+      {"name": "Hausanschluss", "ip": "192.168.1.100", "type": "pro3em"},
+      {"name": "Waermepumpe", "ip": "192.168.1.101", "type": "em"}
+    ],
+    "cloud": {
+      "enabled": false,
+      "server": "shelly-70-eu.shelly.cloud",
+      "auth_key": "YOUR_AUTH_KEY_HERE"
+    },
+    "prefer_local": true,
+    "price_per_kwh": 0.30
+  }
+}
