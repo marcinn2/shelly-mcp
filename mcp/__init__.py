@@ -12,6 +12,7 @@ API Dokumentation:
 
 import json
 import os
+import sys
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -20,20 +21,18 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
-# Config loader: DeskAgent überschreibt Plugin-Config
-def load_config() -> dict:
-    """Lädt Config: DeskAgent apis.json überschreibt lokale config.json."""
-    # 1. DeskAgent config/apis.json (höchste Priorität - überschreibt Plugin-Config)
-    deskagent_config = Path(__file__).parent.parent.parent.parent / "config" / "apis.json"
-    if deskagent_config.exists():
-        return json.loads(deskagent_config.read_text(encoding="utf-8"))
-
-    # 2. Lokale config.json im Plugin-Ordner (Fallback für Standalone)
-    local_config = Path(__file__).parent.parent / "config.json"
-    if local_config.exists():
-        return json.loads(local_config.read_text(encoding="utf-8"))
-
-    raise ValueError("config.json nicht gefunden. Kopiere config.example.json zu config.json")
+# Config loader: DeskAgent paths.load_config() via Environment Variable
+_scripts_dir = os.environ.get("DESKAGENT_SCRIPTS_DIR")
+if _scripts_dir:
+    sys.path.insert(0, _scripts_dir)
+    from paths import load_config
+else:
+    # Standalone-Fallback: lokale config.json
+    def load_config() -> dict:
+        local_config = Path(__file__).parent.parent / "config.json"
+        if local_config.exists():
+            return json.loads(local_config.read_text(encoding="utf-8"))
+        raise ValueError("config.json nicht gefunden. Kopiere config.example.json zu config.json")
 
 mcp = FastMCP("shelly")
 
