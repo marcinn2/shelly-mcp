@@ -2,8 +2,8 @@
   "shelly": {
     "enabled": true,
     "devices": [
-      {"name": "Hausanschluss", "ip": "192.168.1.100", "type": "pro3em"},
-      {"name": "Waermepumpe", "ip": "192.168.1.101", "type": "em"}
+      {"name": "MainConnection", "ip": "192.168.1.100", "type": "pro3em", "username": "admin", "password": ""},
+      {"name": "HeatPump", "ip": "192.168.1.101", "type": "em", "username": "admin", "password": ""}
     ],
     "cloud": {
       "enabled": false,

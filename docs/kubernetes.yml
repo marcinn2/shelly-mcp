@@ -1,0 +1,176 @@
+# Shelly MCP — Kubernetes deployment
+#
+# Prerequisites:
+#   1. Create the config secret first:
+#      kubectl create secret generic shelly-mcp-config \
+#        --from-file=config.json=/path/to/your/config.json
+#
+#   2. Apply this manifest:
+#      kubectl apply -f docs/kubernetes.yml
+#
+# The server runs both SSE and Streamable HTTP on port 8000.
+# Adjust the image tag and namespace to suit your environment.
+#
+# SECURITY NOTE — Kubernetes Secrets are base64-encoded, NOT encrypted at rest
+# by default. To protect credentials stored in etcd, enable encryption:
+#   https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/
+# Alternatively use Sealed Secrets or an external secrets manager (Vault, etc.)
+#
+# The HTTP endpoints have no built-in authentication. Restrict access via the
+# Ingress (e.g. nginx auth_basic / oauth2-proxy) or keep the Service ClusterIP-only.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shelly-mcp
+
+---
+# config.json is stored as a Secret because it contains credentials.
+# Replace with your own secret (see prerequisite above) or use a
+# ConfigMap if your config contains no sensitive values.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shelly-mcp-config
+  namespace: shelly-mcp
+type: Opaque
+stringData:
+  config.json: |
+    {
+      "shelly": {
+        "enabled": true,
+        "devices": [
+          {"name": "MainConnection", "ip": "192.168.1.100", "type": "pro3em", "username": "admin", "password": ""}
+        ],
+        "cloud": {
+          "enabled": false,
+          "server": "shelly-70-eu.shelly.cloud",
+          "auth_key": "YOUR_AUTH_KEY_HERE"
+        },
+        "prefer_local": true,
+        "price_per_kwh": 0.30
+      }
+    }
+  # Bearer token for HTTP endpoint authentication.
+  # Generate a strong token: openssl rand -hex 32
+  mcp-token: "REPLACE_WITH_A_STRONG_RANDOM_TOKEN"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shelly-mcp
+  namespace: shelly-mcp
+  labels:
+    app: shelly-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shelly-mcp
+  template:
+    metadata:
+      labels:
+        app: shelly-mcp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+        - name: shelly-mcp
+          image: registry.mne.pl/shelly-mcp:latest
+          imagePullPolicy: Always
+          args:
+            - python
+            - -m
+            - shelly_mcp
+            - --server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+          env:
+            - name: SHELLY_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shelly-mcp-config
+                  key: mcp-token
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.json
+              subPath: config.json
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: config
+          secret:
+            secretName: shelly-mcp-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shelly-mcp
+  namespace: shelly-mcp
+  labels:
+    app: shelly-mcp
+spec:
+  selector:
+    app: shelly-mcp
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+  type: ClusterIP
+
+---
+# Optional: expose outside the cluster via an Ingress.
+# Remove or adjust the host / tls section to match your setup.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shelly-mcp
+  namespace: shelly-mcp
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: shelly-mcp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shelly-mcp
+                port:
+                  name: http
+  # tls:
+  #   - hosts:
+  #       - shelly-mcp.example.com
+  #     secretName: shelly-mcp-tls

@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 config.json
 .DS_Store
+shelly_mcp/__pycache__

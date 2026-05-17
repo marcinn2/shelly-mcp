@@ -1,0 +1,14 @@
+services:
+  shelly-mcp:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.json:/app/config.json:ro
+    environment:
+      # Set a strong random token to enable Bearer authentication on all HTTP
+      # endpoints. Leave empty (or remove) to disable auth (local use only).
+      SHELLY_MCP_TOKEN: ""
+    restart: unless-stopped
+    # Override transport flags if needed:
+    # command: ["python", "-m", "shelly_mcp", "--sse", "--host", "0.0.0.0"]

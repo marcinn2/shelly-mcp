@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+.python-version
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+config.json
+README.md
+LICENSE
+agents/

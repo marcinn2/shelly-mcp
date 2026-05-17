@@ -1,6 +1,6 @@
 {
   "name": "shelly",
   "version": "1.0.0",
-  "description": "Shelly Smart Home Energie-Messung Integration",
-  "author": "realvirtual GmbH"
+  "description": "Shelly Smart Home Energy Measurement Integration",
+  "authors": ["realvirtual GmbH", "marcinn2"]
 }

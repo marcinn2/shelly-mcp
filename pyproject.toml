@@ -1,0 +1,15 @@
+[project]
+name = "shelly-mcp"
+version = "0.1.0"
+description = "Shelly Smart Home Energy Measurement MCP Server"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.27.1",
+]
+
+[project.scripts]
+shelly-mcp = "shelly_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
