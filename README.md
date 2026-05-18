@@ -1,6 +1,15 @@
 # Shelly MCP Server
 
-[![DeskAgent](https://img.shields.io/badge/DeskAgent-Plugin-blue)](https://deskagent.de)
+[![Claude Desktop](https://img.shields.io/badge/Claude-Desktop-CC785C)](https://claude.ai/download)
+[![Claude Code](https://img.shields.io/badge/Claude-Code-CC785C)](https://claude.ai/code)
+[![Cursor](https://img.shields.io/badge/Cursor-MCP-4B8BF5)](https://cursor.com)
+[![Windsurf](https://img.shields.io/badge/Windsurf-MCP-00B4D8)](https://codeium.com/windsurf)
+[![DeskAgent](https://img.shields.io/badge/DeskAgent-Plugin-0052CC)](https://deskagent.de)
+[![MCP](https://img.shields.io/badge/MCP-Protocol-brightgreen)](https://modelcontextprotocol.io)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)](https://python.org)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)](docs/docker-compose.yml)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326CE5)](docs/kubernetes.yml)
+[![Shelly](https://img.shields.io/badge/Shelly-Gen1%20%2B%20Gen2-00b4d8)](https://shelly.cloud)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 MCP server for Shelly Smart Home devices — energy monitoring, real-time measurements, and device control. Works with any MCP-compatible client: [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.ai/code), [Cursor](https://cursor.com), [Windsurf](https://codeium.com/windsurf), [DeskAgent](https://deskagent.de), and more.
@@ -57,7 +66,7 @@ The mode is set on the device itself — the server reads whichever mode is acti
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/game4automation/shelly
+git clone https://github.com/marcinn2/shelly-mcp
 cd shelly
 uv sync
 ```
@@ -70,7 +79,7 @@ Clone directly into the DeskAgent plugins directory — no manual configuration 
 
 ```bash
 cd /path/to/deskagent/plugins
-git clone https://github.com/game4automation/shelly
+git clone https://github.com/marcinn2/shelly-mcp
 ```
 
 Restart DeskAgent — the plugin is auto-discovered.
