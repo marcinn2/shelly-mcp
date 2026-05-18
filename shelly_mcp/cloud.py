@@ -15,8 +15,8 @@ _device_list_cache: Dict = {
 }
 
 
-def _cloud_api(endpoint: str, data: Dict = None, method: str = "GET", timeout: int = 10) -> Dict:
-    """Executes a Cloud API request (GET or POST)."""
+def _cloud_api(endpoint: str, data: Dict = None, timeout: int = 10) -> Dict:
+    """Executes a Cloud API POST request (auth_key in body, never in URL)."""
     config = get_config()
     cloud = config["cloud"]
 
@@ -28,20 +28,14 @@ def _cloud_api(endpoint: str, data: Dict = None, method: str = "GET", timeout: i
 
     url = f"https://{server}/{endpoint}"
 
-    if method == "GET":
-        params = data or {}
-        params["auth_key"] = auth_key
-        url = f"{url}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
-    else:
-        post_data = data or {}
-        post_data["auth_key"] = auth_key
-        body = urllib.parse.urlencode(post_data).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
+    post_data = (data or {}).copy()
+    post_data["auth_key"] = auth_key
+    body = urllib.parse.urlencode(post_data).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -58,13 +52,13 @@ def _cloud_api(endpoint: str, data: Dict = None, method: str = "GET", timeout: i
 
 
 def cloud_request(endpoint: str, params: Dict = None, timeout: int = 10) -> Dict:
-    """Executes a Cloud API GET request."""
-    return _cloud_api(endpoint, params, method="GET", timeout=timeout)
+    """Executes a Cloud API request (POST so auth_key stays in the request body, not the URL)."""
+    return _cloud_api(endpoint, params, timeout=timeout)
 
 
 def cloud_post(endpoint: str, data: Dict = None, timeout: int = 10) -> Dict:
     """Executes a Cloud API POST request."""
-    return _cloud_api(endpoint, data, method="POST", timeout=timeout)
+    return _cloud_api(endpoint, data, timeout=timeout)
 
 
 def cloud_get_rooms() -> Dict[int, str]:

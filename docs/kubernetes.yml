@@ -97,6 +97,8 @@ spec:
                 secretKeyRef:
                   name: shelly-mcp-config
                   key: mcp-token
+            - name: SHELLY_MCP_ALLOWED_HOSTS
+              value: "shelly-mcp:*"
           ports:
             - name: http
               containerPort: 8000
@@ -170,7 +172,11 @@ spec:
                 name: shelly-mcp
                 port:
                   name: http
-  # tls:
-  #   - hosts:
-  #       - shelly-mcp.example.com
-  #     secretName: shelly-mcp-tls
+  # WARNING: TLS MUST be enabled before exposing this service publicly.
+  # Bearer tokens and all tool responses (containing personal data) travel
+  # unencrypted over plain HTTP without TLS. Provide a certificate via
+  # cert-manager or your own secret and uncomment the block below.
+  tls:
+    - hosts:
+        - shelly-mcp.example.com
+      secretName: shelly-mcp-tls

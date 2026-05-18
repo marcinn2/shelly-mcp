@@ -36,9 +36,11 @@ def get_config() -> Dict[str, Any]:
     if not has_cloud and not has_local:
         raise ValueError("Shelly not configured. Either Cloud Auth Key or local devices required.")
 
+    cloud_enabled = cloud.get("enabled") is not False and bool(cloud.get("auth_key"))
+
     return {
         "devices": devices,
-        "cloud": cloud,
+        "cloud": cloud if cloud_enabled else {},
         "prefer_local": shelly.get("prefer_local", False),
         "timeout": shelly.get("timeout", 10),
         "price_per_kwh": shelly.get("price_per_kwh", 0.30),

@@ -21,10 +21,36 @@ MCP server for Shelly Smart Home devices — energy monitoring, real-time measur
 |--------|------|-------|
 | Shelly Pro 3EM | `pro3em` | 3-phase, 60-day history |
 | Shelly 3EM | `3em` | 3-phase Gen1 |
-| Shelly EM | `em` | 2-channel with CT clamps |
-| Shelly Plus PM | `pm` | Single consumer measurement |
-| Shelly Plus 1PM | `1pm` | Switch with power measurement |
-| Shelly 2PM | `2pm` | Roller/blind control + power measurement |
+| Shelly EM | `em` | 2-channel with CT clamps Gen1 |
+| Shelly 1 | `1` | Single relay, no power meter, Gen1 |
+| Shelly 1L | `1l` | Single relay (no neutral), no power meter, Gen1 |
+| Shelly Plug / Plug S | `plug` / `plugs` | Single relay + power meter, Gen1 |
+| Shelly Plus PM | `pm` | Single consumer measurement, Gen2 |
+| Shelly Plus 1PM | `1pm` | Switch with power measurement, Gen2 |
+| Shelly 2PM | `2pm` | Roller/blind control + power measurement, Gen2 |
+| Shelly 2.5 | `25` or `2.5` | 2-channel switch OR roller mode + power measurement, Gen1 |
+
+### Gen1 vs Gen2
+
+Shelly devices fall into two generations with fundamentally different APIs:
+
+| Generation | Devices | Local API | Auth |
+|------------|---------|-----------|------|
+| Gen1 | 3EM, EM, 1, 1L, Plug, Plug S, 2.5 | REST — `http://{ip}/status`, `/relay/0`, `/roller/0` | HTTP Basic |
+| Gen2+ | Pro 3EM, Plus PM, 1PM, 2PM | RPC — `http://{ip}/rpc/Method` | HTTP Digest |
+
+The server detects the generation from `type` in config and calls the correct API automatically.
+
+### Shelly 2.5 modes
+
+Shelly 2.5 supports two operating modes configured in the device's web UI:
+
+| Mode | What it does | Tools to use |
+|------|-------------|--------------|
+| **Switch / relay** | Two independent relays with power meters | `shelly_switch_control` (channel 0 or 1), `shelly_get_energy_live` |
+| **Roller / blind** | Single motor output with position control | `shelly_cover_control`, `shelly_cover_status` |
+
+The mode is set on the device itself — the server reads whichever mode is active. Use `type: 25` or `type: 2.5` in config for both modes.
 
 ## Installation
 
@@ -307,23 +333,73 @@ Configure your MCP client to send the token. In Claude Desktop / Claude Code add
 
 > **Note:** Bearer auth only applies to HTTP transports (`--sse`, `--http`, `--server`). stdio mode has no network exposure and does not use this variable.
 
+### Allowed hosts
+
+When `SHELLY_MCP_ALLOWED_HOSTS` is **not set**, all `Host` headers are accepted (DNS rebinding protection disabled). This is the default — convenient for local use and simple deployments.
+
+When the variable **is set**, only the listed hostnames are accepted (plus `localhost`/`127.0.0.1`). Use this to harden a public-facing deployment:
+
+```bash
+# Single hostname with any port
+export SHELLY_MCP_ALLOWED_HOSTS="shelly-mcp:*"
+
+# Multiple entries (comma-separated)
+export SHELLY_MCP_ALLOWED_HOSTS="shelly-mcp:*,myhost.example.com:*"
+```
+
+The Kubernetes manifest sets this to `shelly-mcp:*` (matching the Service name). Adjust if your hostname differs.
+
+## Environment Variables
+
+All variables are optional. None are required for stdio mode.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SHELLY_MCP_TOKEN` | _(unset)_ | Bearer token for HTTP endpoint authentication. When set, all HTTP requests must include `Authorization: Bearer <token>`. Disabled when empty. |
+| `SHELLY_MCP_ALLOWED_HOSTS` | _(unset)_ | Comma-separated list of permitted `Host` header values (e.g. `shelly-mcp:*,example.com:*`). When **not set**, all hosts are accepted. When set, only the listed hosts plus `localhost`/`127.0.0.1` are allowed. |
+
 ## Available Tools
 
-| Tool | Description |
-|------|-------------|
-| `shelly_list_devices` | List all devices with status, type, room, and current power |
-| `shelly_get_status` | Detailed status for one device or all devices |
-| `shelly_get_power` | Current power draw of all devices |
-| `shelly_get_energy_live` | Real-time measurements per phase (voltage, current, PF) |
-| `shelly_get_consumption_summary` | Power and energy overview with cost estimate |
-| `shelly_get_energy_history` | Historical data for a device (day / week / month / year) |
-| `shelly_get_daily_consumption` | Daily totals for all energy meters (up to 30 days) |
-| `shelly_get_hourly_profile` | 24 h profile with base load and peak analysis |
-| `shelly_switch_control` | Turn a device on, off, or toggle |
-| `shelly_cover_status` | Get cover state and position for a 2PM in roller mode |
-| `shelly_cover_control` | Open, close, stop, or move a cover to a specific position (0–100%) |
+### Device status
 
-> **Cover tools** work with **local devices only** — the Shelly Cloud API has no cover RPC. The device must be configured in **roller mode** via its web UI or the Shelly app (if it is in switch mode the API returns an error). Position-based control (`action: position`) additionally requires completed calibration.
+| Tool | Arguments | Description |
+|------|-----------|-------------|
+| `shelly_list_devices` | — | All devices (Cloud + local) with identifier, Device ID, online status, and current power |
+| `shelly_get_status_all_devices` | — | Detailed status for every device — uptime, temperature, power, energy |
+| `shelly_get_status` | `device` | Comprehensive status for one device (see below) |
+
+`shelly_get_status` returns the following sections for both Gen1 and Gen2 devices:
+
+| Section | Fields |
+|---------|--------|
+| **System** | Device ID (MAC), uptime, temperature, firmware update flag |
+| **WiFi** | Station connected, SSID, signal strength (dBm + bar), IP address, AP enabled/disabled |
+| **Connectivity** | Cloud (connected / disabled), MQTT (connected / disabled), Bluetooth enabled (Gen2) |
+| **Inputs** | State of each input channel (on / off) |
+| **Outputs** | State of each relay / switch / cover channel (on / off / position) |
+| **Power** | Current power per phase/channel and total energy counter |
+
+### Energy monitoring
+
+| Tool | Arguments | Description |
+|------|-----------|-------------|
+| `shelly_get_power` | — | Current power draw of every device plus total |
+| `shelly_get_energy_live` | `device` | Real-time per-phase measurements — voltage, current, power factor |
+| `shelly_get_consumption_summary` | — | Power and energy overview with cost estimate |
+| `shelly_get_energy_history` | `device`, `period` | Historical data for a device (`day` / `week` / `month` / `year`) |
+| `shelly_get_daily_consumption` | `days` | Daily totals for all energy meters (up to 30 days) |
+| `shelly_get_hourly_profile` | `device` | 24 h profile with base load and peak analysis |
+
+### Control
+
+| Tool | Arguments | Description |
+|------|-----------|-------------|
+| `shelly_switch_control` | `device`, `action`, `channel` | Turn a relay on, off, or toggle (`action`: `on` / `off` / `toggle`) |
+| `shelly_cover_control` | `device`, `action`, `position` | Move a roller/blind: `open`, `close`, `stop`, or `position` (0–100%) |
+| `shelly_cover_status` | `device` | Current roller state, position bar, and motor power |
+
+> **Cover tools** work with **local devices only** — the Shelly Cloud API has no cover RPC. The device must be configured in **roller mode** via its web UI or app. Position-based control requires completed calibration.
+> Supported hardware: **Shelly 2.5 Gen1** (`type: 25` / `2.5`) and **Shelly 2PM Gen2** (`type: 2pm`).
 
 ## Prompts
 
@@ -370,7 +446,7 @@ shelly_mcp/
 ├── cloud.py        # Shelly Cloud API (GET/POST, device list, rooms)
 ├── local.py        # local RPC API with Basic/Digest auth support
 ├── utils.py        # format helpers, device-type detection
-├── tools.py        # 11 MCP tool definitions
+├── tools.py        # 12 MCP tool definitions
 ├── prompts.py      # 4 MCP prompts (energy_report, analyze_device, …)
 └── resources.py    # 3 MCP resources (shelly://config, devices, integration)
 docs/
@@ -397,14 +473,21 @@ This plugin is a personal project that I maintain in my free time.
 
 ### EU GDPR — Commercial Use
 
-**This software is not intended for commercial deployments without prior modifications and a legal review.** In its current form it is designed for personal household use, where the [household exemption (Art. 2(2)(c) GDPR)](https://gdpr-info.eu/art-2-gdpr/) applies.
+> **The authors and contributors accept no liability whatsoever — including legal, regulatory, or financial liability — arising from the use, deployment, or modification of this software, regardless of context. Use entirely at your own risk.**
 
-Commercial or business deployments (property management, smart home services, building operators, etc.) must address the following before going live:
+**This software is not intended for commercial deployments without prior modifications and a thorough legal review.** In its current form it is designed for personal household use, where the [household exemption (Art. 2(2)(c) GDPR)](https://gdpr-info.eu/art-2-gdpr/) applies. The household exemption ceases to apply the moment the software is distributed, operated as a service, or deployed to process data of persons other than the operator.
 
-- **Network identifiers** — device IP addresses and WiFi SSIDs are collected and constitute personal data under GDPR Art. 4(1).
-- **Third-party cloud services** — energy data is transmitted to Shelly Group AD's cloud servers. A Data Processing Agreement (Art. 28) with Shelly Group AD must be in place.
-- **Credentials at rest** — `config.json` and Kubernetes Secrets store credentials in plaintext / base64. Encryption at rest must be implemented (Art. 32).
-- **HTTP endpoint authentication** — the `--sse`, `--http`, and `--server` modes include optional Bearer token authentication via the `SHELLY_MCP_TOKEN` environment variable. **It is strongly recommended to enable it** whenever the server is reachable beyond localhost. Without it, anyone with network access can read device data and trigger switch/cover commands. See [Bearer token authentication](#bearer-token-authentication).
-- **Lawful basis** — a documented lawful basis (Art. 6) and Records of Processing Activities must be established before processing personal data of residents or tenants.
+> **The following is not legal advice.** It is a non-exhaustive list of areas to be aware of, provided as a general hint only. It does not replace a professional legal or compliance review. For binding guidance consult a qualified data protection lawyer in your jurisdiction.
 
-The authors accept no liability for GDPR non-compliance arising from use of this software outside its intended personal/household context.
+Additional areas to consider for commercial or business deployments (property management, smart home services, building operators, etc.):
+
+- **Network identifiers** — device IP addresses, MAC addresses, and WiFi SSIDs constitute personal data under GDPR Art. 4(1) and CJEU C-582/14.
+- **LLM as processor** — any LLM (Claude, GPT, etc.) receiving tool output acts as a data processor (Art. 4(8)). A binding Data Processing Agreement (Art. 28) must be executed with the LLM provider before processing real personal data.
+- **Third-party cloud services** — energy data transmitted to Shelly Group AD's cloud. A DPA (Art. 28) with Shelly Group AD must be in place.
+- **Behavioral profiling** — `shelly_get_hourly_profile` analyses occupancy and lifestyle patterns (base load, peak hours). This may constitute profiling under Art. 22. A documented lawful basis and, if required, a Data Protection Impact Assessment (DPIA, Art. 35) are mandatory.
+- **Credentials at rest** — `config.json` and Kubernetes Secrets store credentials in plaintext / base64. Encryption at rest must be implemented (Art. 32). Use a secrets manager (Vault, AWS Secrets Manager, Sealed Secrets).
+- **HTTP endpoint authentication** — enable `SHELLY_MCP_TOKEN` whenever the server is reachable beyond localhost. See [Bearer token authentication](#bearer-token-authentication).
+- **Lawful basis & RoPA** — document a lawful basis (Art. 6) and maintain Records of Processing Activities (Art. 30) before processing personal data of residents or tenants.
+- **Breach notification** — operators are responsible for notifying the supervisory authority within 72 hours of a personal data breach (Art. 33) and affected individuals where required (Art. 34).
+
+**The authors and contributors provide this software "as is", without warranty of any kind. They are not responsible for any damages, penalties, fines, legal costs, or other liabilities — including those imposed by data protection supervisory authorities — arising from the use or misuse of this software.**

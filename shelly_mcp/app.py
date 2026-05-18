@@ -1,7 +1,22 @@
+import os
 from typing import Dict, Any
-from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("shelly")
+from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+
+def _transport_security() -> TransportSecuritySettings:
+    raw = os.environ.get("SHELLY_MCP_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    allowed = ["127.0.0.1:*", "localhost:*", "[::1]:*"] + [
+        h.strip() for h in raw.split(",") if h.strip()
+    ]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed,
+    )
+
+mcp = FastMCP("shelly", transport_security=_transport_security())
 
 TOOL_METADATA: Dict[str, Any] = {
     "icon": "plug",

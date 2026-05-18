@@ -1,16 +1,39 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
+from anyio import ClosedResourceError
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from shelly_mcp import mcp
 
 _ENV_TOKEN = "SHELLY_MCP_TOKEN"
+
+
+class _SuppressClosedResource:
+    """Silently drops ClosedResourceError at the outermost ASGI layer.
+
+    The MCP Streamable HTTP transport raises ClosedResourceError when a client
+    disconnects or a session expires while a tool is still running. The SDK does
+    not catch this internally, so it propagates to uvicorn and produces a noisy
+    500 traceback. The error is harmless — the response simply has nowhere to go.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await self.app(scope, receive, send)
+        except ClosedResourceError:
+            pass
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -57,19 +80,38 @@ Authentication (HTTP modes only):
     return parser.parse_args()
 
 
-def _build_app(sse: bool, http: bool) -> Starlette:
+def _build_app(sse: bool, http: bool) -> ASGIApp:
     routes = []
+    lifespans = []
+
     if sse:
-        routes += list(mcp.sse_app().routes)
+        src = mcp.sse_app()
+        routes += list(src.routes)
+        lc = getattr(src.router, "lifespan_context", None)
+        if lc:
+            lifespans.append(lc)
+
     if http:
-        routes += list(mcp.streamable_http_app().routes)
-    app = Starlette(routes=routes)
+        src = mcp.streamable_http_app()
+        routes += list(src.routes)
+        lc = getattr(src.router, "lifespan_context", None)
+        if lc:
+            lifespans.append(lc)
+
+    @asynccontextmanager
+    async def combined_lifespan(app):
+        async with contextlib.AsyncExitStack() as stack:
+            for lc in lifespans:
+                await stack.enter_async_context(lc(app))
+            yield
+
+    app = Starlette(routes=routes, lifespan=combined_lifespan)
 
     token = os.environ.get(_ENV_TOKEN, "").strip()
     if token:
         app.add_middleware(BearerAuthMiddleware, token=token)
 
-    return app
+    return _SuppressClosedResource(app)
 
 
 def main() -> None:

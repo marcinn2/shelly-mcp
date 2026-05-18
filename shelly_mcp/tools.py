@@ -4,7 +4,7 @@ from typing import Optional
 from .app import mcp
 from .config import get_config
 from .cloud import cloud_get_device_list, cloud_post, cloud_request
-from .local import device_request, get_local_device
+from .local import device_request, device_request_gen1, get_local_device, is_gen1
 from .utils import format_power, format_energy, is_energy_meter, is_device_online, extract_power
 
 
@@ -17,7 +17,8 @@ def shelly_list_devices() -> str:
     """Lists all Shelly devices (Cloud + Local) with metadata.
 
     Returns:
-        List of devices with name, room, type, IP, firmware and online status
+        List of devices with identifier, name, room, type, IP, and online status.
+        Use the identifier value with other tools (shelly_get_status, shelly_switch_control, etc.)
     """
     lines = ["**Shelly Devices:**\n"]
     config = get_config()
@@ -77,19 +78,134 @@ def shelly_list_devices() -> str:
             ip = device.get("ip", "")
             dev_type = device.get("type", "unknown")
 
-            status = device_request(device, "Shelly.GetStatus", timeout=2)
+            t = config.get("timeout", 5)
+            if is_gen1(device):
+                status = device_request_gen1(device, "status", timeout=t)
+            else:
+                status = device_request(device, "Shelly.GetStatus", timeout=t)
             online = "error" not in status
 
+            if is_gen1(device):
+                mac = status.get("mac", "")
+            else:
+                mac = status.get("sys", {}).get("mac", "")
+
             lines.append(f"- **{name}** {'🟢' if online else '🔴'}")
+            lines.append(f"  Identifier: `{name}`")
+            if mac:
+                lines.append(f"  Device ID: `{mac}`")
             lines.append(f"  IP: `{ip}`")
             lines.append(f"  Type: {dev_type}")
 
             if online:
+                if is_gen1(device):
+                    power = sum(e.get("power", 0) for e in status.get("emeters", [])
+                                or status.get("meters", []))
+                    if power:
+                        lines.append(f"  Power: {format_power(power)}")
+                else:
+                    for key in ["em:0", "pm1:0", "switch:0"]:
+                        if key in status:
+                            power = status[key].get("apower", status[key].get("power", 0))
+                            if power:
+                                lines.append(f"  Power: {format_power(power)}")
+                            break
+            else:
+                lines.append(f"  Error: {status.get('error', 'unknown')}")
+
+            lines.append("")
+
+    if len(lines) == 1:
+        return "No devices configured."
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def shelly_get_status_all_devices() -> str:
+    """Gets detailed status for every configured Shelly device.
+
+    Returns:
+        Uptime, temperature, power and energy for all local and cloud devices
+    """
+    config = get_config()
+    lines = ["**Shelly Status — All Devices:**\n"]
+
+    cloud = config.get("cloud", {})
+    if cloud.get("auth_key"):
+        device_metadata = cloud_get_device_list()
+        result = cloud_post("device/all_status")
+        if "error" not in result:
+            devices = result.get("data", {}).get("devices_status", {})
+            if devices:
+                lines.append("### Cloud Devices\n")
+                for device_id, status in devices.items():
+                    meta = device_metadata.get(device_id, {})
+                    dev_info = status.get("_dev_info", {})
+                    name = meta.get("name") or dev_info.get("name", device_id)
+                    online = is_device_online(status)
+                    lines.append(f"#### {name} {'🟢' if online else '🔴'}")
+                    lines.append(f"- ID: `{device_id}`")
+                    if online:
+                        em0 = status.get("em:0", {})
+                        emeters = status.get("emeters", [])
+                        if em0 and isinstance(em0, dict):
+                            lines.append(f"- Power: {format_power(em0.get('total_act_power', 0))}")
+                        elif emeters:
+                            lines.append(f"- Power: {format_power(sum(e.get('power', 0) for e in emeters))}")
+                    lines.append("")
+        else:
+            lines.append(f"Cloud error: {result['error']}\n")
+
+    local_devices = config.get("devices", [])
+    if local_devices:
+        lines.append("### Local Devices\n")
+        for device in local_devices:
+            name = device.get("name", "Unnamed")
+            dev_type = device.get("type", "unknown")
+            t = config.get("timeout", 5)
+
+            if is_gen1(device):
+                status = device_request_gen1(device, "status", timeout=t)
+            else:
+                status = device_request(device, "Shelly.GetStatus", timeout=t)
+
+            online = "error" not in status
+            mac = status.get("mac") or status.get("sys", {}).get("mac", "") if online else ""
+
+            lines.append(f"#### {name} {'🟢' if online else '🔴'}")
+            lines.append(f"- Identifier: `{name}`")
+            if mac:
+                lines.append(f"- Device ID: `{mac}`")
+            lines.append(f"- Type: {dev_type}")
+
+            if not online:
+                lines.append(f"- Error: {status.get('error', 'unknown')}")
+            elif is_gen1(device):
+                uptime = status.get("uptime")
+                if uptime is not None:
+                    lines.append(f"- Uptime: {str(timedelta(seconds=uptime))}")
+                temp = status.get("temperature")
+                if temp:
+                    lines.append(f"- Temperature: {temp}°C")
+                emeters = status.get("emeters", []) or status.get("meters", [])
+                for i, em in enumerate(emeters):
+                    label = f"Phase {i + 1}" if len(emeters) > 1 else "Power"
+                    lines.append(f"- {label}: {format_power(em.get('power', 0))} | {format_energy(em.get('total', 0))}")
+            else:
+                sys_info = status.get("sys", {})
+                if sys_info:
+                    uptime = sys_info.get("uptime", 0)
+                    lines.append(f"- Uptime: {str(timedelta(seconds=uptime))}")
+                    temp = sys_info.get("temperature", {}).get("tC")
+                    if temp:
+                        lines.append(f"- Temperature: {temp}°C")
                 for key in ["em:0", "pm1:0", "switch:0"]:
                     if key in status:
                         power = status[key].get("apower", status[key].get("power", 0))
-                        if power:
-                            lines.append(f"  Power: {format_power(power)}")
+                        energy = status[key].get("aenergy", {}).get("total", 0)
+                        lines.append(f"- Power: {format_power(power)}")
+                        lines.append(f"- Energy: {format_energy(energy)}")
                         break
 
             lines.append("")
@@ -101,45 +217,165 @@ def shelly_list_devices() -> str:
 
 
 @mcp.tool()
-def shelly_get_status(device: Optional[str] = None) -> str:
-    """Gets the status of one or all Shelly devices.
+def shelly_get_status(device: str) -> str:
+    """Gets comprehensive status for a single Shelly device.
+
+    Includes: uptime, temperature, WiFi (SSID, RSSI, AP), cloud, MQTT,
+    Bluetooth, input states, output states, and power/energy readings.
 
     Args:
-        device: Device name or ID (optional, otherwise all)
+        device: Device name (local config) or device ID (Cloud)
 
     Returns:
-        Device status (online, power, energy, etc.)
+        Full device status grouped by category
     """
-    if not device:
-        return shelly_list_devices()
-
     config = get_config()
-    lines = ["**Shelly Status:**\n"]
 
     local_dev = get_local_device(device)
     if local_dev:
-        status = device_request(local_dev, "Shelly.GetStatus")
+        if is_gen1(local_dev):
+            status = device_request_gen1(local_dev, "status")
+        else:
+            status = device_request(local_dev, "Shelly.GetStatus")
 
         if "error" in status:
             return f"Error: {status['error']}"
 
-        lines.append(f"### {device} 🟢\n")
+        lines = [f"## {device} 🟢\n"]
 
-        sys_info = status.get("sys", {})
-        if sys_info:
-            uptime = sys_info.get("uptime", 0)
-            lines.append(f"- Uptime: {str(timedelta(seconds=uptime))}")
+        # ── System ────────────────────────────────────────────────────────────
+        lines.append("**System**")
+        if is_gen1(local_dev):
+            mac = status.get("mac", "")
+            uptime = status.get("uptime")
+            temp = status.get("temperature")
+            fw = status.get("update", {}).get("old_version", "") or status.get("fw", "")
+            has_update = status.get("update", {}).get("has_update", False)
+        else:
+            sys_info = status.get("sys", {})
+            mac = sys_info.get("mac", "")
+            uptime = sys_info.get("uptime")
             temp = sys_info.get("temperature", {}).get("tC")
-            if temp:
-                lines.append(f"- Temperature: {temp}°C")
+            fw = sys_info.get("available_updates", {})
+            has_update = bool(fw)
 
-        for key in ["em:0", "pm1:0", "switch:0"]:
-            if key in status:
-                power = status[key].get("apower", status[key].get("power", 0))
-                energy = status[key].get("aenergy", {}).get("total", 0)
-                lines.append(f"- Power: {format_power(power)}")
-                lines.append(f"- Energy: {format_energy(energy)}")
-                break
+        if mac:
+            lines.append(f"- Device ID: `{mac}`")
+        if uptime is not None:
+            lines.append(f"- Uptime: {str(timedelta(seconds=uptime))}")
+        if temp:
+            lines.append(f"- Temperature: {temp}°C")
+        if has_update:
+            lines.append("- ⚠️ Firmware update available")
+
+        # ── WiFi ──────────────────────────────────────────────────────────────
+        lines.append("\n**WiFi**")
+        if is_gen1(local_dev):
+            sta = status.get("wifi_sta", {})
+            ap  = status.get("wifi_ap", {})
+        else:
+            sys_info = status.get("sys", {})
+            sta = sys_info.get("wifi_sta", {}) or status.get("wifi", {})
+            ap  = sys_info.get("wifi_ap", {})
+
+        if sta:
+            connected = sta.get("connected", sta.get("status") == "got ip")
+            ssid  = sta.get("ssid", "")
+            rssi  = sta.get("rssi")
+            ip    = sta.get("ip") or sta.get("sta_ip", "")
+            rssi_bar = ""
+            if rssi is not None:
+                strength = "▂▄▆█" if rssi > -55 else "▂▄▆_" if rssi > -70 else "▂▄__" if rssi > -80 else "▂___"
+                rssi_bar = f" {strength}"
+            lines.append(f"- Station: {'connected' if connected else 'disconnected'}")
+            if ssid:
+                lines.append(f"- SSID: {ssid}")
+            if rssi is not None:
+                lines.append(f"- Signal: {rssi} dBm{rssi_bar}")
+            if ip:
+                lines.append(f"- IP: {ip}")
+
+        if ap:
+            ap_enabled = ap.get("enabled", ap.get("is_open") is not None)
+            lines.append(f"- AP: {'enabled' if ap_enabled else 'disabled'}"
+                         + (f" ({ap.get('ssid', '')})" if ap_enabled and ap.get("ssid") else ""))
+
+        # ── Connectivity ──────────────────────────────────────────────────────
+        lines.append("\n**Connectivity**")
+        cloud_s = status.get("cloud", {})
+        mqtt_s  = status.get("mqtt", {})
+        ble_s   = status.get("ble", {})
+
+        cloud_ok = cloud_s.get("connected", False)
+        cloud_en = cloud_s.get("enabled", cloud_ok)
+        lines.append(f"- Cloud: {'🟢 connected' if cloud_ok else ('enabled, disconnected' if cloud_en else '⭕ disabled')}")
+
+        mqtt_ok = mqtt_s.get("connected", False)
+        mqtt_en = mqtt_s.get("enable", mqtt_ok)
+        lines.append(f"- MQTT: {'🟢 connected' if mqtt_ok else ('enabled, disconnected' if mqtt_en else '⭕ disabled')}")
+
+        if ble_s or "ble" in status:
+            ble_en = ble_s.get("enable", False) if isinstance(ble_s, dict) else False
+            lines.append(f"- Bluetooth: {'enabled' if ble_en else '⭕ disabled'}")
+
+        # ── Inputs ────────────────────────────────────────────────────────────
+        if is_gen1(local_dev):
+            inputs = status.get("inputs", [])
+            relays = status.get("relays", [])
+            inputs_combined = [{"state": r.get("input", False)} for r in relays] if not inputs else inputs
+        else:
+            inputs_combined = [v for k, v in status.items() if k.startswith("input:")]
+
+        if inputs_combined:
+            lines.append("\n**Inputs**")
+            for i, inp in enumerate(inputs_combined):
+                state = inp.get("state", inp.get("input", False))
+                lines.append(f"- Input {i}: {'ON' if state else 'off'}")
+
+        # ── Outputs ───────────────────────────────────────────────────────────
+        if is_gen1(local_dev):
+            relays = status.get("relays", [])
+            rollers = status.get("rollers", [])
+            if relays:
+                lines.append("\n**Outputs**")
+                for i, r in enumerate(relays):
+                    lines.append(f"- Relay {i}: {'🟢 ON' if r.get('ison') else '⭕ off'}")
+            if rollers:
+                lines.append("\n**Roller**")
+                r = rollers[0]
+                lines.append(f"- State: {r.get('state', 'unknown')}")
+                if r.get("current_pos") is not None:
+                    lines.append(f"- Position: {r['current_pos']}%")
+        else:
+            switches = [(k, v) for k, v in status.items() if k.startswith("switch:")]
+            covers   = [(k, v) for k, v in status.items() if k.startswith("cover:")]
+            if switches:
+                lines.append("\n**Outputs**")
+                for k, sw in switches:
+                    lines.append(f"- {k}: {'🟢 ON' if sw.get('output') else '⭕ off'}")
+            if covers:
+                lines.append("\n**Cover**")
+                for k, cv in covers:
+                    lines.append(f"- State: {cv.get('state', 'unknown')}")
+                    if cv.get("current_pos") is not None:
+                        lines.append(f"- Position: {cv['current_pos']}%")
+
+        # ── Power / Energy ────────────────────────────────────────────────────
+        if is_gen1(local_dev):
+            emeters = status.get("emeters", []) or status.get("meters", [])
+            if emeters:
+                lines.append("\n**Power**")
+                for i, em in enumerate(emeters):
+                    label = f"Phase {i + 1}" if len(emeters) > 1 else "Channel"
+                    lines.append(f"- {label}: {format_power(em.get('power', 0))} | {format_energy(em.get('total', 0))}")
+        else:
+            energy_keys = [k for k in ["em:0", "pm1:0", "switch:0"] if k in status]
+            if energy_keys:
+                lines.append("\n**Power**")
+                for k in energy_keys:
+                    d = status[k]
+                    lines.append(f"- Power: {format_power(d.get('apower', d.get('power', 0)))}")
+                    lines.append(f"- Energy: {format_energy(d.get('aenergy', {}).get('total', 0))}")
 
         return "\n".join(lines)
 
@@ -150,13 +386,33 @@ def shelly_get_status(device: Optional[str] = None) -> str:
             data = result.get("data", {}).get("device_status", {})
             if data:
                 online = is_device_online(data)
-                lines.append(f"### {device} {'🟢' if online else '🔴'}\n")
+                lines = [f"## {device} {'🟢' if online else '🔴'}\n"]
                 if online:
-                    for i, em in enumerate(data.get("emeters", [])):
-                        lines.append(f"**Phase {i + 1}:**")
-                        lines.append(f"  - Voltage: {em.get('voltage', 0):.1f} V")
-                        lines.append(f"  - Current: {em.get('current', 0):.2f} A")
-                        lines.append(f"  - Power: {format_power(em.get('power', 0))}")
+                    em0 = data.get("em:0", {})
+                    emeters = data.get("emeters", [])
+                    cloud_s = data.get("cloud", {})
+                    wifi = data.get("wifi", {}) or data.get("wifi_sta", {})
+
+                    if wifi:
+                        lines.append("**WiFi**")
+                        lines.append(f"- SSID: {wifi.get('ssid', '')}")
+                        if wifi.get("rssi"):
+                            lines.append(f"- Signal: {wifi['rssi']} dBm")
+
+                    lines.append("\n**Connectivity**")
+                    lines.append(f"- Cloud: {'🟢 connected' if cloud_s.get('connected') else 'disconnected'}")
+
+                    if em0 and isinstance(em0, dict):
+                        lines.append("\n**Power**")
+                        for phase, label in [("a", "L1"), ("b", "L2"), ("c", "L3")]:
+                            p = em0.get(f"{phase}_act_power", 0)
+                            if p:
+                                lines.append(f"- {label}: {format_power(p)}")
+                        lines.append(f"- Total: {format_power(em0.get('total_act_power', 0))}")
+                    elif emeters:
+                        lines.append("\n**Power**")
+                        for i, em in enumerate(emeters):
+                            lines.append(f"- Phase {i + 1}: {format_power(em.get('power', 0))}")
                 return "\n".join(lines)
 
     return f"Device '{device}' not found."
@@ -206,7 +462,9 @@ def shelly_get_power() -> str:
             name = device.get("name", "Unnamed")
             dev_type = device.get("type", "").lower()
 
-            if dev_type in ["pro3em", "3em"]:
+            if is_gen1(device):
+                status = device_request_gen1(device, "status")
+            elif dev_type == "pro3em":
                 status = device_request(device, "EM.GetStatus", {"id": 0})
             else:
                 status = device_request(device, "Shelly.GetStatus")
@@ -215,15 +473,19 @@ def shelly_get_power() -> str:
                 lines.append(f"- **{name}**: ⚠️ Offline")
                 continue
 
-            power = (
-                status.get("total_act_power")
-                or status.get("apower")
-                or next(
-                    (status[k].get("apower", status[k].get("power", 0))
-                     for k in ["em:0", "pm1:0", "switch:0"] if k in status),
-                    0,
+            if is_gen1(device):
+                power = sum(e.get("power", 0) for e in status.get("emeters", [])
+                            or status.get("meters", []))
+            else:
+                power = (
+                    status.get("total_act_power")
+                    or status.get("apower")
+                    or next(
+                        (status[k].get("apower", status[k].get("power", 0))
+                         for k in ["em:0", "pm1:0", "switch:0"] if k in status),
+                        0,
+                    )
                 )
-            )
             total_power += power
             lines.append(f"- **{name}**: {format_power(power)}")
 
@@ -249,7 +511,26 @@ def shelly_get_energy_live(device: str) -> str:
         dev_type = local_dev.get("type", "").lower()
         lines = [f"**Live Measurements - {device}:**\n"]
 
-        if dev_type in ["pro3em", "3em"]:
+        if is_gen1(local_dev):
+            status = device_request_gen1(local_dev, "status")
+            if "error" in status:
+                return f"Error: {status['error']}"
+
+            emeters = status.get("emeters", []) or status.get("meters", [])
+            phase_names = ["L1", "L2", "L3"]
+            for i, em in enumerate(emeters):
+                label = phase_names[i] if i < len(phase_names) else f"Phase {i + 1}"
+                lines.append(f"**{label}:**")
+                lines.append(f"  - Voltage: {em.get('voltage', 0):.1f} V")
+                lines.append(f"  - Current: {em.get('current', 0):.2f} A")
+                lines.append(f"  - Power: {format_power(em.get('power', 0))}")
+                lines.append(f"  - Power Factor: {em.get('pf', 0):.2f}")
+                lines.append(f"  - Energy: {format_energy(em.get('total', 0))}")
+                lines.append("")
+            if emeters:
+                lines.append("**Total:**")
+                lines.append(f"  - Power: {format_power(sum(e.get('power', 0) for e in emeters))}")
+        elif dev_type == "pro3em":
             status = device_request(local_dev, "EM.GetStatus", {"id": 0})
             if "error" in status:
                 return f"Error: {status['error']}"
@@ -390,18 +671,26 @@ def shelly_get_consumption_summary() -> str:
     if config.get("prefer_local", False) and local_devices:
         for device in local_devices:
             name = device.get("name", "Unnamed")
-            status = device_request(device, "Shelly.GetStatus")
+            if is_gen1(device):
+                status = device_request_gen1(device, "status")
+            else:
+                status = device_request(device, "Shelly.GetStatus")
 
             if "error" in status:
                 lines.append(f"- **{name}**: ⚠️ Offline")
                 continue
 
             power = energy = 0
-            for key in ["em:0", "pm1:0", "switch:0"]:
-                if key in status:
-                    power = status[key].get("apower", status[key].get("power", 0))
-                    energy = status[key].get("aenergy", {}).get("total", 0)
-                    break
+            if is_gen1(device):
+                emeters = status.get("emeters", []) or status.get("meters", [])
+                power = sum(e.get("power", 0) for e in emeters)
+                energy = sum(e.get("total", 0) for e in emeters)
+            else:
+                for key in ["em:0", "pm1:0", "switch:0"]:
+                    if key in status:
+                        power = status[key].get("apower", status[key].get("power", 0))
+                        energy = status[key].get("aenergy", {}).get("total", 0)
+                        break
 
             total_power += power
             total_energy += energy
@@ -422,12 +711,27 @@ def shelly_get_consumption_summary() -> str:
 # Device Control
 # =============================================================================
 
+def _cover_state_line(state: str, current_pos, target_pos, power) -> list:
+    state_icons = {
+        "open": "🔼", "closed": "🔽", "opening": "⬆️", "closing": "⬇️", "stopped": "⏹️",
+    }
+    lines = [f"State: {state_icons.get(state, '❓')} **{state}**"]
+    if current_pos is not None:
+        bar = "█" * (current_pos // 10) + "░" * (10 - current_pos // 10)
+        lines.append(f"Position: [{bar}] {current_pos}%")
+    if target_pos is not None and target_pos != current_pos:
+        lines.append(f"Moving to: {target_pos}%")
+    if power:
+        lines.append(f"Motor power: {format_power(power)}")
+    return lines
+
+
 @mcp.tool()
 def shelly_cover_control(device: str, action: str, position: Optional[int] = None) -> str:
-    """Controls a Shelly 2PM (or any Gen2 cover device) in roller/blind mode.
+    """Controls a roller/blind — Shelly 2.5 Gen1 (roller mode) or Shelly 2PM Gen2.
 
-    Requires the device to be configured in roller mode via the Shelly web UI
-    or app. Position calibration must be completed before using GoToPosition.
+    Requires the device to be configured in roller mode via its web UI or app.
+    Position-based control requires completed calibration.
 
     Args:
         device: Device name (local config)
@@ -451,86 +755,90 @@ def shelly_cover_control(device: str, action: str, position: Optional[int] = Non
             return "Action 'position' requires a position value (0–100)."
         if not (0 <= position <= 100):
             return f"Position {position} out of range. Must be 0–100."
-        result = device_request(local_dev, "Cover.GoToPosition", {"id": 0, "pos": position})
-    elif action == "open":
-        result = device_request(local_dev, "Cover.Open", {"id": 0})
-    elif action == "close":
-        result = device_request(local_dev, "Cover.Close", {"id": 0})
+
+    if is_gen1(local_dev):
+        if action == "position":
+            result = device_request_gen1(local_dev, "roller/0", {"go": "to_pos", "roller_pos": position})
+        else:
+            result = device_request_gen1(local_dev, "roller/0", {"go": action})
+        if "error" in result:
+            return f"Error: {result['error']}"
+        full_status = device_request_gen1(local_dev, "status")
+        if "error" in full_status:
+            return f"Command sent. Could not read back status: {full_status['error']}"
+        roller = (full_status.get("rollers") or [{}])[0]
+        state = roller.get("state", "unknown")
+        current_pos = roller.get("current_pos")
+        power = roller.get("power", 0)
+        lines = [f"**{device}** — cover {action} command sent."]
+        lines += _cover_state_line(state, current_pos, None, power)
     else:
-        result = device_request(local_dev, "Cover.Stop", {"id": 0})
-
-    if "error" in result:
-        return f"Error: {result['error']}"
-
-    status = device_request(local_dev, "Cover.GetStatus", {"id": 0})
-    if "error" in status:
-        return f"Command sent. Could not read back status: {status['error']}"
-
-    state = status.get("state", "unknown")
-    current_pos = status.get("current_pos")
-    target_pos = status.get("target_pos")
-    power = status.get("apower", 0)
-
-    lines = [f"**{device}** — cover {action} command sent.", f"State: **{state}**"]
-    if current_pos is not None:
-        lines.append(f"Position: {current_pos}%")
-    if target_pos is not None and target_pos != current_pos:
-        lines.append(f"Moving to: {target_pos}%")
-    if power:
-        lines.append(f"Motor power: {format_power(power)}")
+        if action == "position":
+            result = device_request(local_dev, "Cover.GoToPosition", {"id": 0, "pos": position})
+        elif action == "open":
+            result = device_request(local_dev, "Cover.Open", {"id": 0})
+        elif action == "close":
+            result = device_request(local_dev, "Cover.Close", {"id": 0})
+        else:
+            result = device_request(local_dev, "Cover.Stop", {"id": 0})
+        if "error" in result:
+            return f"Error: {result['error']}"
+        status = device_request(local_dev, "Cover.GetStatus", {"id": 0})
+        if "error" in status:
+            return f"Command sent. Could not read back status: {status['error']}"
+        lines = [f"**{device}** — cover {action} command sent."]
+        lines += _cover_state_line(
+            status.get("state", "unknown"),
+            status.get("current_pos"),
+            status.get("target_pos"),
+            status.get("apower", 0),
+        )
     return "\n".join(lines)
 
 
 @mcp.tool()
 def shelly_cover_status(device: str) -> str:
-    """Gets the current status of a Shelly 2PM cover (roller/blind).
+    """Gets the current status of a roller/blind — Shelly 2.5 Gen1 or Shelly 2PM Gen2.
 
     Args:
         device: Device name (local config)
 
     Returns:
-        Cover state, position, motor power, and energy counters
+        Cover state, position, and motor power
     """
     local_dev = get_local_device(device)
     if not local_dev:
         return f"Device '{device}' not found in local config."
 
-    status = device_request(local_dev, "Cover.GetStatus", {"id": 0})
-    if "error" in status:
-        return f"Error: {status['error']}"
-
-    state = status.get("state", "unknown")
-    current_pos = status.get("current_pos")
-    target_pos = status.get("target_pos")
-    power = status.get("apower", 0)
-    voltage = status.get("voltage", 0)
-    current = status.get("current", 0)
-    energy_total = status.get("aenergy", {}).get("total", 0)
-
-    state_icons = {
-        "open": "🔼", "closed": "🔽", "opening": "⬆️", "closing": "⬇️", "stopped": "⏹️",
-    }
-    icon = state_icons.get(state, "❓")
-
-    lines = [f"**{device}** — Cover Status\n",
-             f"State: {icon} **{state}**"]
-
-    if current_pos is not None:
-        bar_len = current_pos // 10
-        bar = "█" * bar_len + "░" * (10 - bar_len)
-        lines.append(f"Position: [{bar}] {current_pos}%")
-
-    if target_pos is not None and target_pos != current_pos:
-        lines.append(f"Moving to: {target_pos}%")
-
-    if voltage:
-        lines.append(f"Voltage: {voltage:.1f} V")
-    if current:
-        lines.append(f"Current: {current:.2f} A")
-    if power:
-        lines.append(f"Motor power: {format_power(power)}")
-    if energy_total:
-        lines.append(f"Energy (motor): {format_energy(energy_total)}")
+    if is_gen1(local_dev):
+        full_status = device_request_gen1(local_dev, "status")
+        if "error" in full_status:
+            return f"Error: {full_status['error']}"
+        roller = (full_status.get("rollers") or [{}])[0]
+        state = roller.get("state", "unknown")
+        current_pos = roller.get("current_pos")
+        power = roller.get("power", 0)
+        lines = [f"**{device}** — Cover Status\n"]
+        lines += _cover_state_line(state, current_pos, None, power)
+    else:
+        status = device_request(local_dev, "Cover.GetStatus", {"id": 0})
+        if "error" in status:
+            return f"Error: {status['error']}"
+        state = status.get("state", "unknown")
+        current_pos = status.get("current_pos")
+        target_pos = status.get("target_pos")
+        power = status.get("apower", 0)
+        voltage = status.get("voltage", 0)
+        current = status.get("current", 0)
+        energy_total = status.get("aenergy", {}).get("total", 0)
+        lines = [f"**{device}** — Cover Status\n"]
+        lines += _cover_state_line(state, current_pos, target_pos, power)
+        if voltage:
+            lines.append(f"Voltage: {voltage:.1f} V")
+        if current:
+            lines.append(f"Current: {current:.2f} A")
+        if energy_total:
+            lines.append(f"Energy (motor): {format_energy(energy_total)}")
 
     return "\n".join(lines)
 
@@ -553,7 +861,9 @@ def shelly_switch_control(device: str, action: str = "toggle", channel: int = 0)
 
     local_dev = get_local_device(device)
     if local_dev:
-        if action == "toggle":
+        if is_gen1(local_dev):
+            result = device_request_gen1(local_dev, f"relay/{channel}", {"turn": action})
+        elif action == "toggle":
             result = device_request(local_dev, "Switch.Toggle", {"id": channel})
         else:
             result = device_request(local_dev, "Switch.Set", {"id": channel, "on": action == "on"})
@@ -763,7 +1073,6 @@ def shelly_get_hourly_profile(device: str) -> str:
 
     meta = cloud_get_device_list().get(device, {})
     name = meta.get("name", device)
-    is_solar = meta.get("pv_usage", "") == "solar"
 
     lines = [f"**Hourly Profile - {name}**", "Last 24 hours\n"]
 
