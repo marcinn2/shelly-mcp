@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from .app import mcp
 from .config import get_config
@@ -844,7 +844,7 @@ def shelly_cover_status(device: str) -> str:
 
 
 @mcp.tool()
-def shelly_switch_control(device: str, action: str = "toggle", channel: int = 0) -> str:
+def shelly_switch_control(device: str, action: Literal["on", "off", "toggle"] = "toggle", channel: int = 0) -> str:
     """Switches a Shelly device on or off.
 
     Args:

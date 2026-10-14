@@ -1,3 +1,4 @@
+import hashlib
 import json
 import urllib.request
 import urllib.error
@@ -13,6 +14,20 @@ GEN1_TYPES: set = {"3em", "em", "25", "2.5", "1", "1l", "plug", "plugs"}
 
 def is_gen1(device: Dict) -> bool:
     return device.get("type", "").lower() in GEN1_TYPES
+
+
+class _ShellyDigestAuthHandler(urllib.request.HTTPDigestAuthHandler):
+    """Digest auth handler with SHA-256 support.
+
+    Gen2+ devices challenge with algorithm=SHA-256, which urllib's built-in
+    handler does not implement (it only knows MD5 and SHA-1).
+    """
+
+    def get_algorithm_impls(self, algorithm):
+        if algorithm == "SHA-256":
+            H = lambda x: hashlib.sha256(x.encode("ascii")).hexdigest()
+            return H, lambda s, d: H(f"{s}:{d}")
+        return super().get_algorithm_impls(algorithm)
 
 
 def local_request_gen1(
@@ -90,7 +105,7 @@ def local_request(
             pwd_mgr.add_password(None, url, username, password)
             opener = urllib.request.build_opener(
                 urllib.request.HTTPBasicAuthHandler(pwd_mgr),
-                urllib.request.HTTPDigestAuthHandler(pwd_mgr),
+                _ShellyDigestAuthHandler(pwd_mgr),
             )
             response_ctx = opener.open(req, timeout=timeout)
         else:
